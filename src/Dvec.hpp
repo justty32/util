@@ -11,7 +11,11 @@
 #include <tuple>
 #include <algorithm>
 #include <initializer_list>
-#include "./Mfp.h"
+#include "./Mfp.hpp"
+
+// 64 bit program's dvec, can't used in 32 bit program
+// cause size_t different
+// is want to change, be ware of container.size(), which return size_t
 
 // put it outside of class def field, ex. class ee{}; SERIA..(ee)
 #define UIO_SERIALIZE_FUNCS_OUT_OF_CLASS(ClassName)\
@@ -27,72 +31,6 @@ namespace uio{
 
 		using Dvec = std::vector<char>;
 
-		template<typename T>
-		Dvec to_dvec(T& target) {
-			if constexpr (detail::is_specialization <T, std::vector>::value
-				|| detail::is_specialization <T, std::list>::value
-				|| detail::is_specialization <T, std::map>::value
-				|| detail::is_specialization <T, std::set>::value
-				|| std::is_array<T>::value)
-			{
-				return detail::to_dvec_orderer_container(target);
-			}
-			else if constexpr (detail::is_specialization <T, std::pair>::value) {
-				return detail::to_dvec_pair(target);
-			}
-			else if constexpr (detail::is_specialization <T, std::tuple>::value) {
-				return detail::to_dvec_tuple(target);
-			}
-			else if constexpr (std::is_same<T, std::string>::value) {
-				return detail::to_dvec_str(target);
-			}
-			else {
-				static_assert(std::is_pod<T>::value, "T is not POD type, please define its to_dvec");
-				Dvec d;
-				d.resize(sizeof(T));
-				memcpy(d.data(), &target, d.size());
-				return d;
-			}
-		}
-
-		//pointer set to nullptr
-		template<typename T> 
-		T from_dvec(Dvec dvec) { 
-			if constexpr (detail::is_specialization <T, std::vector>::value
-				|| detail::is_specialization <T, std::list>::value
-				|| detail::is_specialization <T, std::map>::value
-				|| detail::is_specialization <T, std::set>::value
-				|| std::is_array<T>::value)
-			{
-				return detail::from_dvec_orderer_container<T>(dvec);
-			}
-			else if constexpr (detail::is_specialization <T, std::pair>::value) {
-				return detail::from_dvec_pair<T>(dvec);
-			}
-			else if constexpr (detail::is_specialization <T, std::tuple>::value) {
-				return detail::from_dvec_tuple<T>(dvec);
-			}
-			else if constexpr (std::is_same <T, std::string>::value) {
-				return detail::from_dvec_str(dvec);
-			}
-			else {
-				static_assert(std::is_pod<T>::value, "T is not POD type, please define its to_dvec");
-				typename std::remove_const<T>::type target{};
-				if (dvec.empty()) return target;
-				if (dvec.size() <= sizeof(target))
-					memcpy(&target, dvec.data(), dvec.size());
-				else
-					memcpy(&target, dvec.data(), sizeof(T));
-				if constexpr (std::is_pointer<T>::value)
-					return nullptr;
-				else
-					return target; 
-			}
-		}
-
-		template<typename T>
-		void from_dvec(T& target, Dvec dvec) { target = from_dvec<T>(dvec); }
-
 		namespace detail {
 
 			template<typename Test, template<typename...> class Ref>
@@ -100,16 +38,45 @@ namespace uio{
 			template<template<typename...> class Ref, typename... Args>
 			struct is_specialization<Ref<Args...>, Ref> : std::true_type {};
 
-			Dvec to_dvec_str(std::string& target);
-			std::string from_dvec_str(Dvec dvec);
+			inline Dvec to_dvec_str(std::string& target) {
+				if (target.empty()) return {};
+				Dvec d(target.size());
+				memcpy(d.data(), target.c_str(), target.size());
+				return d;
+			}
+			inline std::string from_dvec_str(Dvec dvec) { 
+				if (dvec.empty()) return {};
+				std::string str(dvec.data(), dvec.size());
+				str.resize(str.size() + 1, 0);
+				return str;
+			}
 
-			// split-dvec's struct must be like up 
-			std::vector<Dvec> split_dvec(Dvec dvec);
 			// read data from mf, make it dvec
 			// and ref mf will be seeked
-			Dvec mf_get_dvec(Mfp& mf);
+			inline Dvec mf_get_dvec(Mfp& mf) {
+				size_t d_size = mf.get<size_t>();
+				Dvec d(d_size);
+				mf.read(d.data(), d_size);
+				return d;
+			}
+			// split-dvec's struct must be like up 
+			inline std::vector<Dvec> split_dvec(Dvec dvec) {
+				if (dvec.empty()) return {};
+				Mfp mf{ dvec.data(), dvec.size() };
+				size_t ds_size = mf.get<size_t>();
+				std::vector<Dvec> ds(ds_size);
+				for (size_t i = 0; i < ds_size; i++)
+					ds[i] = mf_get_dvec(mf);
+				return ds;
+			}
 			// not useful
-			size_t cp_with_size(char* ptr, Dvec d);
+			inline size_t cp_with_size(char* ptr, Dvec d) {
+				// not consider ptr's size, just copy to it
+				size_t s = d.size();
+				memcpy(ptr, &s, sizeof(size_t));
+				memcpy(ptr + sizeof(size_t), d.data(), d.size());
+				return s + sizeof(size_t);
+			}
 
 			// {len, size1, data1, size2, data2, .....}
 			template<typename T>
@@ -282,6 +249,72 @@ namespace uio{
 				return false;
 			}
 		}
+
+		template<typename T>
+		Dvec to_dvec(T& target) {
+			if constexpr (detail::template is_specialization <T, std::vector>::value
+				|| detail::template is_specialization <T, std::list>::value
+				|| detail::template is_specialization <T, std::map>::value
+				|| detail::template is_specialization <T, std::set>::value
+				|| std::is_array<T>::value)
+			{
+				return detail::to_dvec_orderer_container(target);
+			}
+			else if constexpr (detail::template is_specialization <T, std::pair>::value) {
+				return detail::to_dvec_pair(target);
+			}
+			else if constexpr (detail::template is_specialization <T, std::tuple>::value) {
+				return detail::to_dvec_tuple(target);
+			}
+			else if constexpr (std::is_same<T, std::string>::value) {
+				return detail::to_dvec_str(target);
+			}
+			else {
+				static_assert(std::is_pod<T>::value, "T is not POD type, please define its to_dvec");
+				Dvec d;
+				d.resize(sizeof(T));
+				memcpy(d.data(), &target, d.size());
+				return d;
+			}
+		}
+
+		//pointer set to nullptr
+		template<typename T> 
+		T from_dvec(Dvec dvec) { 
+			if constexpr (detail::template is_specialization <T, std::vector>::value
+				|| detail::template is_specialization <T, std::list>::value
+				|| detail::template is_specialization <T, std::map>::value
+				|| detail::template is_specialization <T, std::set>::value
+				|| std::is_array<T>::value)
+			{
+				return detail::from_dvec_orderer_container<T>(dvec);
+			}
+			else if constexpr (detail::template is_specialization <T, std::pair>::value) {
+				return detail::from_dvec_pair<T>(dvec);
+			}
+			else if constexpr (detail::template is_specialization <T, std::tuple>::value) {
+				return detail::from_dvec_tuple<T>(dvec);
+			}
+			else if constexpr (std::is_same <T, std::string>::value) {
+				return detail::from_dvec_str(dvec);
+			}
+			else {
+				static_assert(std::is_pod<T>::value, "T is not POD type, please define its to_dvec");
+				typename std::remove_const<T>::type target{};
+				if (dvec.empty()) return target;
+				if (dvec.size() <= sizeof(target))
+					memcpy(&target, dvec.data(), dvec.size());
+				else
+					memcpy(&target, dvec.data(), sizeof(T));
+				if constexpr (std::is_pointer<T>::value)
+					return nullptr;
+				else
+					return target; 
+			}
+		}
+
+		template<typename T>
+		void from_dvec(T& target, Dvec dvec) { target = from_dvec<T>(dvec); }
 	}
 }
 #endif // !DVEC_H
